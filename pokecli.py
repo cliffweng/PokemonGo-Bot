@@ -91,9 +91,12 @@ def main():
                     level='info',
                     formatted='Starting bot...'
                 )
-
-                while True:
+                st = 1
+                while st < config.steps:
+                    logger.info('======== Bot step [%d|%d]' % (st,config.steps))
                     bot.tick()
+                    st = st + 1
+                finished = True
 
             except KeyboardInterrupt:
                 bot.event_manager.emit(
@@ -196,6 +199,15 @@ def init_config():
 
     # Read passed in Arguments
     required = lambda x: not x in load
+    add_config(
+        parser,
+        load,
+        short_flag="-st",
+        long_flag="--steps",
+        help="Number of steps",
+        type=float,
+        default=100000
+    )
     add_config(
         parser,
         load,
@@ -409,6 +421,7 @@ def init_config():
     config.action_wait_min = load.get('action_wait_min', 1)
     config.plugins = load.get('plugins', [])
     config.raw_tasks = load.get('tasks', [])
+    config.steps = load.get('steps', 1000000)
 
     config.vips = load.get('vips', {})
 
