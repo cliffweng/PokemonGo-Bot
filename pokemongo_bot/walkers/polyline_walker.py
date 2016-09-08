@@ -1,31 +1,29 @@
-# -*- coding: utf-8 -*-
+from random import uniform
 
-from pokemongo_bot.human_behaviour import sleep
-from pokemongo_bot.step_walker import StepWalker
-from polyline_generator import Polyline
+from pokemongo_bot.cell_workers.utils import distance
+from pokemongo_bot.walkers.step_walker import StepWalker
+from polyline_generator import PolylineObjectHandler
 
 
 class PolylineWalker(StepWalker):
 
-    def __init__(self, bot, speed, dest_lat, dest_lng):
-        super(PolylineWalker, self).__init__(bot, speed, dest_lat, dest_lng)
-        self.polyline_walker = Polyline((self.api._position_lat, self.api._position_lng),
-                                        (self.destLat, self.destLng), self.speed)
-        self.bot.event_manager.emit(
-            'polyline_request',
-            sender=self,
-            level='info',
-            formatted="{url}",
-            data={'url': self.polyline_walker.URL}
-        )
+    def __init__(self, bot, dest_lat, dest_lng):
+        self.bot = bot
+        self.speed = uniform(self.bot.config.walk_min, self.bot.config.walk_max)
+        self.dest_lat, self.dest_lng = dest_lat, dest_lng
+        self.actual_pos = tuple(self.bot.position[:2])
+        self.actual_alt = self.bot.position[-1]
+        self.polyline = PolylineObjectHandler.cached_polyline(self.actual_pos,
+                                                              (self.dest_lat, self.dest_lng),
+                                                              self.speed, google_map_api_key=self.bot.config.gmapkey)
+        self.pol_lat, self.pol_lon = self.polyline.get_pos()
+        self.pol_alt = self.polyline.get_alt() or self.actual_alt
+        super(PolylineWalker, self).__init__(self.bot, self.pol_lat, self.pol_lon,
+                                             self.pol_alt, fixed_speed=self.speed)
 
     def step(self):
-        cLat, cLng = self.api._position_lat, self.api._position_lng
-        while (cLat, cLng) != self.polyline_walker.get_pos()[0]:
-            self.polyline_walker.unpause()
-            sleep(1)
-            self.polyline_walker.pause()
-            cLat, cLng = self.polyline_walker.get_pos()[0]
-            self.api.set_position(round(cLat, 5), round(cLng, 5), 0)
-            self.bot.heartbeat()
-        return True
+        step = super(PolylineWalker, self).step()
+        if not (distance(self.pol_lat, self.pol_lon, self.dest_lat, self.dest_lng) > 10 and step):
+            return False
+        else:
+            return True

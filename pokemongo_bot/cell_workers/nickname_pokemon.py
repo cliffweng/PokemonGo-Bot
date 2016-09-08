@@ -1,13 +1,20 @@
+# -*- coding: utf-8 -*-
+from __future__ import unicode_literals
+
 import os
 import json
 from pokemongo_bot.base_task import BaseTask
-from pokemongo_bot.human_behaviour import sleep
+from pokemongo_bot.human_behaviour import sleep, action_delay
 from pokemongo_bot.inventory import pokemons, Pokemon, Attack
+
+import re
 
 
 DEFAULT_IGNORE_FAVORITES = False
 DEFAULT_GOOD_ATTACK_THRESHOLD = 0.7
 DEFAULT_TEMPLATE = '{name}'
+DEFAULT_NICKNAME_WAIT_MIN = 3
+DEFAULT_NICKNAME_WAIT_MAX = 3
 
 MAXIMUM_NICKNAME_LENGTH = 12
 
@@ -82,6 +89,7 @@ class NicknamePokemon(BaseTask):
     {iv_pct2}    IV perfection (in 00-99 format - 2 chars)
                     So 99 is best (it's a 100% perfection)
     {iv_pct1}    IV perfection (in 0-9 format - 1 char)
+    {iv_ads_hex} Joined IV values in HEX (e.g. 4C9)
 
     # Basic Values of the pokemon (identical for all of one kind)
     {base_attack}   Basic Attack (40-284) of the current pokemon kind
@@ -181,12 +189,12 @@ class NicknamePokemon(BaseTask):
 
     # noinspection PyAttributeOutsideInit
     def initialize(self):
-        self.ignore_favorites = self.config.get(
-            'dont_nickname_favorite', DEFAULT_IGNORE_FAVORITES)
-        self.good_attack_threshold = self.config.get(
-            'good_attack_threshold', DEFAULT_GOOD_ATTACK_THRESHOLD)
-        self.template = self.config.get(
-            'nickname_template', DEFAULT_TEMPLATE)
+        self.ignore_favorites = self.config.get('dont_nickname_favorite', DEFAULT_IGNORE_FAVORITES)
+        self.good_attack_threshold = self.config.get('good_attack_threshold', DEFAULT_GOOD_ATTACK_THRESHOLD)
+        self.template = self.config.get('nickname_template', DEFAULT_TEMPLATE)
+        self.nickname_above_iv = self.config.get('nickname_above_iv', 0)
+        self.nickname_wait_min = self.config.get('nickname_wait_min', DEFAULT_NICKNAME_WAIT_MIN)
+        self.nickname_wait_max = self.config.get('nickname_wait_max', DEFAULT_NICKNAME_WAIT_MAX)
 
         self.translate = None
         locale = self.config.get('locale', 'en')
@@ -201,7 +209,10 @@ class NicknamePokemon(BaseTask):
         """
         for pokemon in pokemons().all():  # type: Pokemon
             if not pokemon.is_favorite or not self.ignore_favorites:
-                self._nickname_pokemon(pokemon)
+                if pokemon.iv >= self.nickname_above_iv:
+                    if self._nickname_pokemon(pokemon):
+                        # Make the bot appears more human
+                        action_delay(self.nickname_wait_min, self.nickname_wait_max)
 
     def _localize(self, string):
         if self.translate and string in self.translate:
@@ -210,19 +221,20 @@ class NicknamePokemon(BaseTask):
             return string
 
     def _nickname_pokemon(self, pokemon):
-        # type: (Pokemon) -> None
+        # type: (Pokemon) -> bool
+        # returns False if no wait needed (no API calls tried before return), True if wait is needed
         """
         Nicknaming process
         """
 
         # We need id of the specific pokemon unstance to be able to rename it
-        instance_id = pokemon.id
+        instance_id = pokemon.unique_id
         if not instance_id:
             self.emit_event(
                 'api_error',
                 formatted='Failed to get pokemon name, will not rename.'
             )
-            return
+            return False
 
         # Generate new nickname
         old_nickname = pokemon.nickname
@@ -234,11 +246,11 @@ class NicknamePokemon(BaseTask):
                 formatted="Unable to nickname {} due to bad template ({})"
                           .format(old_nickname, bad_key)
             )
-            return
+            return False
 
         # Skip if pokemon is already well named
         if pokemon.nickname_raw == new_nickname:
-            return
+            return False
 
         # Send request
         response = self.bot.api.nickname_pokemon(
@@ -254,7 +266,7 @@ class NicknamePokemon(BaseTask):
                 'api_error',
                 formatted='Attempt to nickname received bad response from server.'
             )
-            return
+            return True
 
         # Nickname unset
         if result == 0:
@@ -283,6 +295,7 @@ class NicknamePokemon(BaseTask):
                 formatted='Attempt to nickname received unexpected result'
                           ' from server ({}).'.format(result)
             )
+        return True
 
     def _generate_new_nickname(self, pokemon, template):
         # type: (Pokemon, string) -> string
@@ -291,7 +304,8 @@ class NicknamePokemon(BaseTask):
         """
 
         # Filter template
-        template = template.lower().strip()
+        # only convert the keys to lowercase, leaving the format specifier alone
+        template = re.sub(r"{[\w_\d]*", lambda x:x.group(0).lower(), template).strip()
 
         # Individial Values of the current specific pokemon (different for each)
         iv_attack = pokemon.iv_attack
@@ -321,6 +335,10 @@ class NicknamePokemon(BaseTask):
         moveset = pokemon.moveset
 
         pokemon.name = self._localize(pokemon.name)
+        
+        # Remove spaces from Nidoran M/F 
+        pokemon.name = pokemon.name.replace("Nidoran M","NidoranM")
+        pokemon.name = pokemon.name.replace("Nidoran F","NidoranF")
 
         #
         # Generate new nickname
@@ -341,6 +359,8 @@ class NicknamePokemon(BaseTask):
             iv_stamina=iv_stamina,
             # Joined IV values like: 4/12/9
             iv_ads='/'.join(map(str, iv_list)),
+            # Joined IV values in HEX like: 4C9
+            iv_ads_hex = ''.join(map(lambda x: format(x, 'X'), iv_list)),
             # Sum of the Individial Values
             iv_sum=iv_sum,
             # IV perfection (in 000-100 format - 3 chars)
